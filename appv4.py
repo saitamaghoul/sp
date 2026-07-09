@@ -730,6 +730,7 @@ body{background:var(--soft);color:var(--txt);font-family:'Segoe UI',system-ui,sa
       <button class="mobile-nav-toggle" onclick="toggleSidebar()">☰ Menu</button>
       <div class="spill">● Live</div>
       <button class="rbtn" onclick="fetchData()">↻ Refresh</button>
+      <a class="rbtn" href="/logout" style="color:var(--red)">↪ Logout</a>
       <!-- Page-specific CSV export -->
       <a id="export-link" href="/api/export/csv/dashboard" class="rbtn">⬇ Export CSV</a>
     </div>
