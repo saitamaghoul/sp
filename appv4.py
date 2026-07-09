@@ -1,9 +1,11 @@
-from flask import Flask, render_template_string, request, jsonify, Response
+from flask import Flask, render_template_string, request, jsonify, Response, session, redirect, url_for
 import sqlite3, os, csv, io
 from datetime import datetime, timedelta
 import random
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
 DATABASE = 'rinl_enterprise.db'
 
 # Realistic dept data: (name, headcount, attendance%, std_hours, ot_hours, incidents, productivity)
@@ -93,6 +95,11 @@ def init_db():
         facilities_score REAL DEFAULT 80, section_efficiency REAL DEFAULT 80,
         emergency_medical REAL DEFAULT 80, leave_balance REAL DEFAULT 80,
         hospital_access REAL DEFAULT 80)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT, department TEXT,
         message TEXT, severity TEXT, created_at TEXT)''')
@@ -109,6 +116,10 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS shift_schedule (
       id INTEGER PRIMARY KEY AUTOINCREMENT, department TEXT, shift TEXT,
       staff INTEGER, assigned_at TEXT)''')
+    c.execute('SELECT COUNT(*) FROM users')
+    if c.fetchone()[0] == 0:
+        c.execute('INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)',
+                  ('admin', generate_password_hash('admin123'), datetime.now().strftime('%Y-%m-%d %H:%M')))
     c.execute('SELECT COUNT(*) FROM workforce_data')
     if c.fetchone()[0] == 0:
         for d in DEPARTMENTS:
@@ -157,6 +168,61 @@ def migrate_db():
     conn.commit(); conn.close()
 
 migrate_db()
+
+AUTH_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    body{font-family:Inter,Arial,sans-serif;background:linear-gradient(135deg,#111827,#1f2937);color:#fff;margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;}
+    .card{width:min(420px,100%);background:rgba(255,255,255,.08);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:24px;box-shadow:0 18px 45px rgba(0,0,0,.2);}
+    h1{margin:0 0 8px;font-size:1.5rem;}
+    p{color:#cbd5e1;margin:0 0 16px;}
+    label{display:block;margin-bottom:6px;font-size:.9rem;font-weight:600;}
+    input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:#0f172a;color:#fff;margin-bottom:12px;box-sizing:border-box;}
+    button{width:100%;padding:10px 12px;border:none;border-radius:10px;background:linear-gradient(135deg,#ec4899,#f59e0b);color:#fff;font-weight:700;cursor:pointer;}
+    .error{background:#7f1d1d;padding:10px;border-radius:10px;margin-bottom:12px;color:#fecaca;font-size:.9rem;}
+    .link{margin-top:12px;text-align:center;font-size:.9rem;color:#cbd5e1;}
+    .link a{color:#fbcfe8;text-decoration:none;font-weight:700;}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>{{ title }}</h1>
+  <p>{{ subtitle }}</p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post">
+    <label>Username</label>
+    <input name="username" required>
+    <label>Password</label>
+    <input name="password" type="password" required>
+    <button type="submit">{{ button_text }}</button>
+  </form>
+  <div class="link">
+    {% if mode == 'login' %}
+      No account yet? <a href="{{ url_for('signup') }}">Create one</a>
+    {% else %}
+      Already have an account? <a href="{{ url_for('login') }}">Sign in</a>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>
+"""
+
+@app.before_request
+def auth_gate():
+    if request.path in ('/login', '/signup', '/logout', '/favicon.ico') or request.path.startswith('/static/'):
+        return None
+    if request.path.startswith('/api/'):
+        if not session.get('user_id'):
+            return jsonify({'error': 'login required'}), 401
+        return None
+    if not session.get('user_id'):
+        return redirect(url_for('login'))
 
 HR_COLS = ['health_index','work_environment','facilities_score','section_efficiency',
            'emergency_medical','leave_balance','hospital_access']
@@ -477,6 +543,45 @@ def list_retirements(dept):
 @app.route('/')
 def index():
     return render_template_string(HTML)
+
+@app.route('/login', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        conn = get_db(); user = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone(); conn.close()
+        if user and check_password_hash(user['password_hash'], password):
+            session.clear()
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            return redirect(url_for('index'))
+        return render_template_string(AUTH_HTML, title='Sign in', subtitle='Access the workforce dashboard', button_text='Log in', mode='login', error='Invalid username or password')
+    return render_template_string(AUTH_HTML, title='Sign in', subtitle='Access the workforce dashboard', button_text='Log in', mode='login', error=None)
+
+@app.route('/signup', methods=['GET','POST'])
+def signup():
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        if not username or not password:
+            return render_template_string(AUTH_HTML, title='Create account', subtitle='Create a new account to continue', button_text='Create account', mode='signup', error='Username and password are required')
+        if len(password) < 4:
+            return render_template_string(AUTH_HTML, title='Create account', subtitle='Create a new account to continue', button_text='Create account', mode='signup', error='Password must be at least 4 characters')
+        conn = get_db(); c = conn.cursor()
+        existing = c.execute('SELECT id FROM users WHERE username=?', (username,)).fetchone()
+        if existing:
+            conn.close()
+            return render_template_string(AUTH_HTML, title='Create account', subtitle='Create a new account to continue', button_text='Create account', mode='signup', error='That username already exists')
+        c.execute('INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)',
+                  (username, generate_password_hash(password), datetime.now().strftime('%Y-%m-%d %H:%M')))
+        conn.commit(); conn.close()
+        return redirect(url_for('login'))
+    return render_template_string(AUTH_HTML, title='Create account', subtitle='Create a new account to continue', button_text='Create account', mode='signup', error=None)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 HTML = """<!DOCTYPE html>
 <html lang="en" data-theme="light">
