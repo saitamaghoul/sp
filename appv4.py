@@ -169,6 +169,34 @@ def migrate_db():
 
 migrate_db()
 
+
+def apply_hr_impact(conn, department, severity):
+    if not department:
+        return None
+    severity_map = {'low': 0, 'medium': 2, 'high': 4, 'critical': 6}
+    impact = severity_map.get((severity or 'low').lower(), 0)
+    if impact <= 0:
+        return None
+    row = conn.execute('SELECT health_index, work_environment, facilities_score, section_efficiency, emergency_medical, leave_balance FROM workforce_data WHERE department=?', (department,)).fetchone()
+    if not row:
+        return None
+    updates = {
+        'health_index': max(0, float(row['health_index']) - impact),
+        'work_environment': max(0, float(row['work_environment']) - impact),
+        'facilities_score': max(0, float(row['facilities_score']) - impact),
+        'section_efficiency': max(0, float(row['section_efficiency']) - impact),
+        'emergency_medical': max(0, float(row['emergency_medical']) - max(1, impact // 2)),
+        'leave_balance': max(0, float(row['leave_balance']) - max(1, impact // 2)),
+    }
+    set_clause = ', '.join(f"{col}=?" for col in updates)
+    values = list(updates.values()) + [department]
+    conn.execute(f'UPDATE workforce_data SET {set_clause} WHERE department=?', values)
+    return {
+        'impact': impact,
+        'summary': f"HR factors reduced by {impact} points due to {severity} severity equipment issue",
+        'updated': updates,
+    }
+
 AUTH_HTML = """
 <!doctype html>
 <html lang="en">
@@ -499,18 +527,23 @@ def export_csv_retirements():
 def report_equipment():
     d = request.json or {}
     dept = d.get('department')
-    equip = d.get('equipment')
+    equip = d.get('equipment') or 'Unknown asset'
     sev = d.get('severity', 'low')
     desc = d.get('description', '')
     rb = d.get('reported_by', 'anonymous')
     conn = get_db(); c = conn.cursor()
-    c.execute('INSERT INTO equipment_issues (department,equipment,severity,description,reported_by,created_at) VALUES (?,?,?,?,?,?)',
-              (dept, equip, sev, desc, rb, datetime.now().strftime('%Y-%m-%d %H:%M')))
-    # create alert for high severity
+    hr_flag = 1 if sev.lower() in ('high', 'critical') else 0
+    c.execute('INSERT INTO equipment_issues (department,equipment,severity,description,reported_by,created_at,hr_flag) VALUES (?,?,?,?,?,?,?)',
+              (dept, equip, sev, desc, rb, datetime.now().strftime('%Y-%m-%d %H:%M'), hr_flag))
     if sev.lower() in ('high', 'critical'):
-      insert_alert(conn, dept, f"Equipment issue reported: {equip} ({sev})", 'danger')
+      hr_impact = apply_hr_impact(conn, dept, sev)
+      insert_alert(conn, dept, f"Equipment service alert: {equip} ({sev}) requires urgent attention", 'danger')
+      if hr_impact:
+        insert_alert(conn, dept, hr_impact['summary'], 'warning')
+    elif sev.lower() == 'medium':
+      insert_alert(conn, dept, f"Routine maintenance requested for {equip}", 'warning')
     conn.commit(); conn.close()
-    return jsonify({'status':'ok'})
+    return jsonify({'status':'ok', 'hr_flag': hr_flag, 'equipment': equip, 'severity': sev})
 
 
 @app.route('/api/equipment/<dept>' )
@@ -521,8 +554,8 @@ def get_equipment(dept):
 
 @app.route('/api/equipment/stats')
 def equipment_stats():
-    conn=get_db(); rows=conn.execute('SELECT equipment,COUNT(*) as cnt FROM equipment_issues GROUP BY equipment').fetchall(); conn.close()
-    return jsonify([{ 'equipment':r['equipment'],'count':r['cnt']} for r in rows])
+    conn=get_db(); rows=conn.execute('SELECT equipment, COUNT(*) as cnt, SUM(CASE severity WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) as service_load FROM equipment_issues GROUP BY equipment ORDER BY service_load DESC, cnt DESC').fetchall(); conn.close()
+    return jsonify([{ 'equipment':r['equipment'],'count':int(r['service_load'] or 0),'issue_count':int(r['cnt'] or 0)} for r in rows])
 
 
 @app.route('/api/retirements', methods=['POST'])
@@ -736,8 +769,9 @@ body{background:var(--soft);color:var(--txt);font-family:'Segoe UI',system-ui,sa
         <div style="font-weight:800;font-size:.9rem;margin-bottom:.8rem">⚠️ Risk Watchlist (Rule-Based)</div>
         <div id="ai-insights"></div>
         <div style="margin-top:1rem">
-          <div style="font-weight:800;font-size:.85rem;margin-bottom:.5rem">🛠️ Equipment Issues</div>
+          <div style="font-weight:800;font-size:.85rem;margin-bottom:.5rem">🛠️ Equipment Service Load</div>
           <div style="height:140px;position:relative"><canvas id="equipChart"></canvas></div>
+          <div id="equip-priority" style="margin-top:.6rem;font-size:.72rem;color:var(--mut)"></div>
         </div>
       </div></div>
     </div>
@@ -962,10 +996,12 @@ body{background:var(--soft);color:var(--txt);font-family:'Segoe UI',system-ui,sa
               <div style="flex:1;background:var(--soft);padding:1rem;border-radius:10px">
                 <div style="font-weight:700;margin-bottom:.6rem">🔧 Report Equipment Issue</div>
                 <div class="row g-2">
-                  <div class="col-sm-6"><input id="eq-equipment" class="form-control form-control-sm" placeholder="Equipment (e.g. Turbine)"></div>
+                  <div class="col-sm-6"><select id="eq-equipment" class="form-select form-select-sm"><option value="">Select asset</option><option>Turbine</option><option>Rotor</option><option>Fans</option><option>Generator</option><option>Pipes</option><option>Conveyor</option><option>Boiler</option><option>Pump</option><option>Valve</option></select></div>
                   <div class="col-sm-6"><select id="eq-severity" class="form-select form-select-sm"><option>low</option><option>medium</option><option>high</option><option>critical</option></select></div>
+                  <div class="col-12"><input id="eq-equipment-custom" class="form-control form-control-sm" placeholder="Or enter custom asset"></div>
                   <div class="col-12"><input id="eq-reporter" class="form-control form-control-sm" placeholder="Reported by"></div>
-                  <div class="col-12"><textarea id="eq-desc" class="form-control form-control-sm" placeholder="Description (optional)"></textarea></div>
+                  <div class="col-12"><textarea id="eq-desc" class="form-control form-control-sm" placeholder="Describe the issue and any safety concern"></textarea></div>
+                  <div class="col-12" style="font-size:.72rem;color:var(--mut)">Tip: high/critical reports automatically flag HR impact and create a service alert.</div>
                   <div class="col-12"><button class="rbtn" style="margin-top:.4rem" onclick="reportIssue()">Report</button>
                     <button class="rbtn" id="dept-download" style="margin-left:.6rem">⬇ Dept CSV</button></div>
                 </div>
@@ -1122,9 +1158,14 @@ async function fetchEquipmentStats(){
     const rows=await res.json();
     const labels=rows.map(r=>r.equipment||'Unknown');
     const data=rows.map(r=>r.count||0);
+    const priorityEl=document.getElementById('equip-priority');
+    if(priorityEl){
+      const top=rows.slice(0,4).map(r=>`${r.equipment} (${r.count})`).join(' • ');
+      priorityEl.innerHTML=top ? `Priority assets: ${top}` : 'No equipment issues logged yet.';
+    }
     if(equipChart)equipChart.destroy();
     const ctx=document.getElementById('equipChart').getContext('2d');
-    equipChart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Issues',data,backgroundColor:'rgba(255,118,117,0.9)'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+    equipChart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Service Load',data,backgroundColor:'rgba(255,118,117,0.9)'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,title:{display:true,text:'Service Load'}}}}});
   }catch(e){console.error('equipment stats',e)}
 }
 
@@ -1185,9 +1226,19 @@ function downloadDeptCSV(dept){
 
 async function reportIssue(){
   if(!modalDept) return alert('Select a department first');
-  const payload={department:modalDept.department,equipment:document.getElementById('eq-equipment').value,severity:document.getElementById('eq-severity').value,description:document.getElementById('eq-desc').value,reported_by:document.getElementById('eq-reporter').value};
+  const selectedAsset=document.getElementById('eq-equipment').value;
+  const customAsset=document.getElementById('eq-equipment-custom').value.trim();
+  const asset=customAsset || selectedAsset || 'Unknown asset';
+  const payload={department:modalDept.department,equipment:asset,severity:document.getElementById('eq-severity').value,description:document.getElementById('eq-desc').value,reported_by:document.getElementById('eq-reporter').value};
   const r=await fetch('/api/equipment/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  if(r.ok){fetchEquipment(modalDept.department);fetchData();alert('Issue reported');}
+  if(r.ok){
+    const data=await r.json();
+    fetchEquipment(modalDept.department);
+    fetchEquipmentStats();
+    fetchData();
+    const note = data.severity==='high' || data.severity==='critical' ? 'Issue logged and HR impact flagged.' : 'Issue logged successfully.';
+    alert(note);
+  }
   else alert('Failed to report');
 }
 
