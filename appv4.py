@@ -509,6 +509,9 @@ body{background:var(--soft);color:var(--txt);font-family:'Segoe UI',system-ui,sa
 .ssec{padding:.6rem 1rem .2rem;color:#4a5568;font-size:.6rem;letter-spacing:1.5px;font-weight:700;text-transform:uppercase;}
 .abadge{background:var(--red);color:#fff;border-radius:999px;font-size:.6rem;padding:.1rem .38rem;margin-left:auto;}
 .dtoggle{margin:auto .8rem .8rem;padding:.6rem .9rem;background:rgba(255,255,255,.05);border-radius:11px;display:flex;align-items:center;justify-content:space-between;color:#94a3b8;font-size:.75rem;cursor:pointer;border:none;width:calc(100% - 1.6rem);}
+.mobile-nav-toggle{display:none;align-items:center;gap:.4rem;padding:.4rem .7rem;border:1px solid #e2e8f0;border-radius:9px;background:var(--card);color:var(--txt);font-size:.75rem;font-weight:700;}
+.sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .2s;z-index:999;}
+.sidebar-overlay.active{opacity:1;pointer-events:auto;}
 /* MAIN — FIX: use full remaining width */
 .main{margin-left:220px;padding:1.2rem 1.4rem;min-height:100vh;width:calc(100vw - 220px);}
 .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem;flex-wrap:wrap;gap:.5rem;}
@@ -556,11 +559,12 @@ body{background:var(--soft);color:var(--txt);font-family:'Segoe UI',system-ui,sa
 .sbdge{border-radius:7px;padding:.2rem .5rem;font-size:.68rem;font-weight:700;}
 /* Sim helper text */
 .sim-help{font-size:.7rem;color:var(--mut);margin-top:.3rem;line-height:1.4;}
-@media(max-width:768px){.sidebar{width:190px;}.main{margin-left:190px;width:calc(100vw - 190px);padding:.9rem;}}
-@media(max-width:576px){.sidebar{position:fixed;left:-220px;transition:left .3s;}.sidebar.open{left:0;}.main{margin-left:0;width:100vw;}}
+@media(max-width:768px){.sidebar{width:220px;}.main{margin-left:220px;width:calc(100vw - 220px);padding:.9rem;}}
+@media(max-width:576px){.sidebar{position:fixed;top:0;left:0;bottom:0;transform:translateX(-100%);transition:transform .3s ease;z-index:1000;width:220px;}.sidebar.open{transform:translateX(0);}.main{margin-left:0;width:100%;padding:.9rem;}.mobile-nav-toggle{display:inline-flex;}.topbar{flex-direction:column;align-items:flex-start;}.tright{width:100%;justify-content:space-between;flex-wrap:wrap;}.card{padding:1rem;}.kval{font-size:1.4rem;}.hgrid{grid-template-columns:1fr;}.shift-table td,.shift-table th{padding:.4rem .5rem;font-size:.72rem;}.modal-dialog{margin:.5rem;}}
 </style>
 </head>
 <body>
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 <div class="wrapper">
 
 <div class="sidebar" id="sidebar">
@@ -585,6 +589,7 @@ body{background:var(--soft);color:var(--txt);font-family:'Segoe UI',system-ui,sa
   <div class="topbar">
     <div class="ptitle" id="pageTitle">Executive Dashboard</div>
     <div class="tright">
+      <button class="mobile-nav-toggle" onclick="toggleSidebar()">☰ Menu</button>
       <div class="spill">● Live</div>
       <button class="rbtn" onclick="fetchData()">↻ Refresh</button>
       <!-- Page-specific CSV export -->
@@ -913,6 +918,7 @@ function nav(page, el) {
   document.querySelectorAll('.snav').forEach(n=>n.classList.remove('active'));
   document.getElementById(page).classList.add('active');
   el.classList.add('active');
+  closeSidebar();
   const T={dashboard:'Executive Dashboard',heatmap:'Plant Operations Heatmap',
     simulator:'Workforce Capacity Simulator',shift:'Shift Planner',alerts:'Alert Center',data:'Data Management',
     hrfactors:'HR Wellbeing Factors',predict:'AI Prediction'};
@@ -928,6 +934,18 @@ function toggleDark(){
   document.documentElement.setAttribute('data-theme',dark?'dark':'light');
   document.getElementById('dlbl').textContent=dark?'☀️ Light Mode':'🌙 Dark Mode';
   document.getElementById('dico').textContent=dark?'●':'○';
+}
+
+function toggleSidebar(){
+  const sidebar=document.getElementById('sidebar');
+  const overlay=document.getElementById('sidebar-overlay');
+  const open=sidebar.classList.toggle('open');
+  overlay.classList.toggle('active', open);
+}
+
+function closeSidebar(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('active');
 }
 
 function animCount(el,target,suf=''){
