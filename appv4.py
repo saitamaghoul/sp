@@ -6,7 +6,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
-DATABASE = 'rinl_enterprise.db'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATABASE = os.path.join(BASE_DIR, 'rinl_enterprise.db')
 
 # Realistic dept data: (name, headcount, attendance%, std_hours, ot_hours, incidents, productivity)
 # High-heat/physical depts have lower attendance, more incidents, more OT
